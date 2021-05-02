@@ -1,0 +1,198 @@
+select * from userbehavior limit 5;      #查看数据是什么样的
+set sql_safe_updates=0;
+#增加一列时间列
+alter table userbehavior add datetime timestamp(0) null;
+#将时间戳转化成日期类型
+update userbehavior set datetime=from_unixtime(timestamp);
+
+#将时间分成日期和小时
+alter table userbehavior add column date char(10) null;
+update userbehavior set date=substring(datetime from 1 for 10);
+alter table userbehavior add column time char(10) null;
+update userbehavior set time=substring(datetime from 12 for 2);
+
+select date,count(distinct userid) from userbehavior group by date;
+#除去不全的数据
+delete from userbehavior where datetime<'2017-11-24 00:00:00' or datetime>'2017-12-04 00:00:00';
+
+
+#分析用户的行为漏斗模型
+
+#总用户行为的漏斗模型
+select behavior,count(*) '人数' from userbehavior group by behavior;
+#独立访客的漏斗模型
+select behavior,count(distinct userid) '用户人数' from userbehavior group by behavior
+order by '用户人数';
+
+#查看PV、UV数据
+select count(distinct userid) UV,
+(select count(*) from userbehavior where behavior='pv') PV,
+(select count(*) from userbehavior where behavior='pv')/count(distinct userid) 'PV/UV'
+from userbehavior;
+
+
+#跳失率
+#只点击一次浏览的用户数量/总的访问数量
+select count(*) '只浏览一次就离开人数' from
+	(select userid from userbehavior 
+	group by userid 
+	having count(behavior)=1
+	) a;
+	
+select count(distinct userid) '用户总数'  from userbehavior;
+
+
+#按照时间维度分析用户行为
+select date,
+sum(case when behavior='pv' then 1 else 0 end) '浏览数',
+sum(case when behavior='fav' then 1 else 0 end) '收藏数',
+sum(case when behavior='cart' then 1 else 0 end) '购物车数',
+sum(case when behavior='buy' then 1 else 0 end) '付款数'
+from userbehavior 
+group by date
+order by date;
+
+select time,
+sum(case when behavior='pv' then 1 else 0 end) '浏览数',
+sum(case when behavior='fav' then 1 else 0 end) '收藏数',
+sum(case when behavior='cart' then 1 else 0 end) '购物车数',
+sum(case when behavior='buy' then 1 else 0 end) '付款数'
+from userbehavior 
+group by time
+order by time;
+
+
+#按照产品分析
+#销量前50的产品
+select * from
+(select itemid,count(*) '热销商品' ,
+row_number() over(order by count(*) desc) '热销排名' 
+from userbehavior
+where behavior= 'buy' 
+group by itemid) a
+where a.热销排名 <51;
+
+select * from
+(select itemid,count(*) '热搜商品' ,
+row_number() over(order by count(*) desc) '热搜排名' 
+from userbehavior
+where behavior= 'pv' or behavior='fav' or behavior='cart'
+group by itemid) a
+where a.热搜排名 <51;
+
+#热搜和热销产品匹配
+select aa.itemid,aa.热销商品,aa.热销排名,bb.热搜商品,bb.热搜排名
+from 
+	(select * from
+		(select itemid,count(*) '热销商品' ,
+		row_number() over(order by count(*) desc) '热销排名' 
+		from userbehavior
+		where behavior= 'buy' 
+		group by itemid) a
+	where a.热销排名 <51) aa
+join
+	(select * from
+		(select itemid,count(*) '热搜商品' ,
+		row_number() over(order by count(*) desc) '热搜排名' 
+		from userbehavior
+		where behavior= 'pv' or behavior='fav' or behavior='cart'
+		group by itemid) a
+	where a.热搜排名 <51) bb
+	on aa.itemid= bb.itemid;
+	
+	
+	
+#商品的复购率
+#按购买次数划分商品
+select a.购买次数, count(itemid) 商品数量 from 
+(select itemid ,count(*) '购买次数' from userbehavior where behavior='buy'
+group by itemid) a
+group by a.购买次数 
+order by a.购买次数 desc;
+
+#付费转化率
+#产品的付费转化率
+select categoryid,
+sum(case when behavior='PV' then 1 else 0 end) 浏览数,
+sum(case when behavior='buy' then 1 else 0 end) 付款数,
+sum(case when behavior='buy' then 1 else 0 end)/sum(case when behavior='PV' then 1 else 0 end) 转化率
+from userbehavior
+group by categoryid
+order by categoryid;
+
+
+#按天的付费转换
+select date,
+sum(case when behavior='PV' then 1 else 0 end) 浏览数,
+sum(case when behavior='buy' then 1 else 0 end) 付款数,
+sum(case when behavior='buy' then 1 else 0 end)/sum(case when behavior='PV' then 1 else 0 end) 转化率
+from userbehavior
+group by date
+order by date;
+
+#按小时的付费转化
+select time,
+sum(case when behavior='PV' then 1 else 0 end) 浏览数,
+sum(case when behavior='buy' then 1 else 0 end) 付款数,
+sum(case when behavior='buy' then 1 else 0 end)/sum(case when behavior='PV' then 1 else 0 end) 转化率
+from userbehavior
+group by time
+order by time;
+
+
+#FRM分析
+#用户最近购买时间
+create view pay_b as
+select userid,datediff('2017-12-04',max(date)) b from userbehavior
+where behavior='buy' group by userid;
+
+create view RR as
+select userid,
+(case when b between 8 and 9 then 1
+when b between 6 and 7 then 2
+when b between 4 and 5 then 3
+when b between 2 and 3 then 4
+when b between 0 and 1 then 5
+else null end ) r
+from pay_b
+order by r desc;
+
+#用户最近购买次数
+select userid,count(*) from userbehavior 
+where behavior='buy' 
+group by userid 
+order by count(*) desc;   #范围在1-72
+
+create view pay_f as
+select userid,count(*) as a from userbehavior 
+where behavior='buy'
+group by userid;
+
+create view ff as
+select userid,
+(case when a between 1 and 15 then 1
+when a between 16 and 30 then 2
+when a between 31 and 45 then 3
+when a between 46 and 57 then 4
+when a between 58 and 72 then 5
+else null end) f
+from pay_f
+order by f desc;
+
+
+#创建平均分视图
+create view r_f as
+select RR.userid,RR.r,ff.f from RR left join ff on RR.userid=ff.userid;
+
+select avg(r) R的平均值, avg(f) f的平均值 from r_f;
+
+select a.用户分类,count(*) 人数 
+from 
+(select userid,
+(case when r>3.5215 and f>1.0101 then '重要价值客户'
+when r>3.5215 and f<1.0101 then '重要发展客户'
+when r<3.5215 and f>1.0101 then '重要保持客户'
+when r<3.5215 and f<1.0101 then '重要挽留客户'
+else 0 end) 用户分类
+from r_f) a
+group by 用户分类;
